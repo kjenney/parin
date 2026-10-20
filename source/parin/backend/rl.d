@@ -17,6 +17,9 @@ import parin.joka.memory;
 import parin.joka.types;
 import parin.types;
 
+import io   = parin.joka.io;
+import stdc = parin.joka.stdc;
+
 __gshared BackendState* _backendState;
 
 // ---------- Config
@@ -150,6 +153,12 @@ void openWindow(int width, int height, IStr title, bool vsync, int fpsMax, int w
     rl.SetConfigFlags(rl.FLAG_WINDOW_RESIZABLE | (vsync ? rl.FLAG_VSYNC_HINT : 0));
     rl.SetTraceLogLevel(rl.LOG_ERROR);
     rl.InitWindow(width, height, title.toStrz().getOr());
+    if (!rl.IsWindowReady()) {
+        // Opening a window can fail (e.g. no display when running headless). Raylib only logs a
+        // warning about it, which may be suppressed, so report it clearly and exit.
+        io.basicPrint("Parin: could not open a window. If running headless, set DISPLAY (e.g. via X forwarding) or start a display server, then try again.\n", io.StdStream.error);
+        stdc.exit(1);
+    }
     rl.InitAudioDevice();
     rl.SetExitKey(rl.KEY_NULL);
     rl.SetTargetFPS(fpsMax);

@@ -1,0 +1,12 @@
+{
+    "authors" : ["Name"],
+    "copyright" : "Copyright © 2026, Name",
+    "description" : "A game made with Parin.",
+    "license" : "proprietary",
+    "name" : "game",
+    "stringImportPaths": ["assets"],
+    "dependencies": {"parin": "*"},
+    "lflags-posix": ["-L."],
+    "lflags-osx": ["-rpath", "@executable_path/"],
+    "lflags-linux": ["-rpath=$$ORIGIN"]
+}

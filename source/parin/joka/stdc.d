@@ -195,3 +195,5 @@ void* calloc(size_t objectCount, size_t objectSize);
 void* realloc(void* ptr, size_t newSize);
 void free(void* ptr);
 void qsort(void* ptr, size_t count, size_t size, QsortCompFunc comp);
+
+void exit(int code);
