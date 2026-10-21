@@ -1,8 +1,10 @@
 /// This example shows how to build a Super Mario Bros.-style platformer with Parin.
 ///
 /// It demonstrates the box physics engine (`BoxWorld` / `BoxMover`) used for a
-/// tile-based level, a scrolling camera, enemy AI, collectibles, bumpable
-/// question blocks, and a simple state machine for death / victory / game over.
+/// tile-based level, a scrolling camera, enemy AI (walkers and a pipe plant),
+/// collectibles, bumpable question blocks, a "momentum jump" where running
+/// faster makes you jump higher, and a simple state machine for death /
+/// victory / game over.
 ///
 /// Controls:
 ///   Arrow keys / WASD   Move and jump (up or space to jump)
@@ -40,6 +42,8 @@ auto gold         = Rgba(0xF5, 0xD5, 0x4A);
 auto coinYellow   = Rgba(0xF5, 0xC5, 0x1A);
 auto goombaBody   = Rgba(0x9A, 0x5A, 0x2A);
 auto goombaFeet   = Rgba(0x4A, 0x2A, 0x12);
+auto plantGreen   = Rgba(0x4C, 0xB0, 0x4C);
+auto plantRed     = Rgba(0xE0, 0x3B, 0x1B);
 auto hudWhite     = Rgba(0xFC, 0xF8, 0xEA);
 
 // ==========================================================================
@@ -48,7 +52,7 @@ auto hudWhite     = Rgba(0xFC, 0xF8, 0xEA);
 // A simple ASCII level. Each character is one 16x16 tile.
 //   '.' air      'X' ground      'B' brick        '?' question block
 //   'S' stone    '|' pipe body   'T' pipe top     'F' flag pole
-//   'C' coin     'G' goomba      'P' player start
+//   'C' coin     'G' goomba      'Y' pipe plant   'P' player start
 enum levelMap = [
     "..........................................................................................",
     "..........................................................................................",
@@ -59,7 +63,7 @@ enum levelMap = [
     "....................................................................................F.....",
     ".....................CCC.......................................................S....F.....",
     "..............................................................................SS....F.....",
-    "................?...BB?BB...............................||...................SSS....F.....",
+    "................?...BB?BB.........................YY....||...................SSS....F.....",
     "..................................................TT....TT..................SSSS....F.....",
     "............................................TT....||....||.................SSSSS....F.....",
     "..P...............G......................G..||....||....||..G............GSSSSSS....S.....",
@@ -89,7 +93,10 @@ enum runSpeed   = 1.7;
 enum accel      = 0.2;
 enum gravity    = 0.22;
 enum jump       = 5.0;
+enum jumpBonus  = 1.5f;  // extra jump velocity when running at full speed.
 enum goombaSpeed = 0.5;
+enum plantCycle = 2.6f;  // seconds for a full rise / hold / retract / hide cycle.
+enum plantMaxH  = 28.0f; // max height the plant reaches above its pipe lip.
 
 // ==========================================================================
 //  Entity types
@@ -101,6 +108,12 @@ struct Goomba {
     bool alive;
     bool squished;
     float squishT;
+}
+
+struct Piranha {
+    float cx;      // horizontal center of the plant (pixels).
+    float baseY;   // top of the pipe lip; the plant rises from here.
+    float t;       // cycle phase, 0..1.
 }
 
 struct Coin {
@@ -141,6 +154,7 @@ int playerStartCol = 2;
 
 List!Vec2  goombaStarts;
 List!Goomba goombas;
+List!Piranha piranhas;
 List!Coin  coins;
 List!Bump  bumps;
 List!CoinPop coinPops;
@@ -233,6 +247,25 @@ void parseLevel() {
             else if (c == 'P') playerStartCol = col;
         }
     }
+
+    // Pipe plants: a run of 'Y's on one row becomes a single plant, centered
+    // on the pipe and rising from the top of the tile below (the pipe lip).
+    piranhas.clear();
+    foreach (row; 0 .. levelRows) {
+        int col = 0;
+        while (col < levelCols) {
+            if (levelMap[row][col] != 'Y') {
+                col++;
+            } else {
+                int start = col;
+                while (col < levelCols && levelMap[row][col] == 'Y') col++;
+                int end = col - 1;
+                float cx = cast(float) (start * tile + (end - start + 1) * tile * 0.5);
+                float baseY = cast(float) ((row + 1) * tile);
+                piranhas.push(Piranha(cx, baseY, 0.0f));
+            }
+        }
+    }
 }
 
 void setupWorld() {
@@ -264,6 +297,9 @@ void setupWorld() {
         auto id = world.pushActor(Box(cast(int) gs.x, cast(int) gs.y, tile, tile));
         goombas.push(Goomba(id, -1.0f, 0.0f, true, false, 0.0f));
     }
+
+    // Pipe plants.
+    foreach (ref plant; piranhas) plant.t = 0.0f;
 
     // Reset pickups and effects.
     foreach (ref coin; coins) coin.taken = false;
@@ -308,6 +344,10 @@ void updatePlayer(float dt) {
 
     if (inputX > 0) facingRight = true;
     else if (inputX < 0) facingRight = false;
+
+    // Momentum jump: the faster we are running, the higher we jump.
+    float speedRatio = min(abs(playerMover.velocity.x) / runSpeed, 1.0f);
+    playerMover.jump = jump + jumpBonus * speedRatio;
 
     float dirY = (jumpPressed && isOnGround) ? -1.0f : 0.0f;
     auto vel = playerMover.move(Vec2(inputX, dirY));
@@ -372,6 +412,21 @@ void updateGoombas(float dt) {
     }
 }
 
+float piranhaHeight(Piranha plant) {
+    // Cycle: rise, hold at full height, retract, hide inside the pipe.
+    if (plant.t < 0.25) return (plant.t / 0.25f) * plantMaxH;
+    if (plant.t < 0.55) return plantMaxH;
+    if (plant.t < 0.80) return (1.0f - (plant.t - 0.55f) / 0.25f) * plantMaxH;
+    return 0.0f;
+}
+
+void updatePiranhas(float dt) {
+    foreach (ref plant; piranhas) {
+        plant.t += dt / plantCycle;
+        if (plant.t >= 1.0f) plant.t -= 1.0f;
+    }
+}
+
 void updateEffects(float dt) {
     // Bump animations.
     for (int i = cast(int) (bumps.length - 1); i >= 0; i--) {
@@ -418,6 +473,17 @@ void checkCollisions() {
                 killPlayer();
                 return;
             }
+        }
+    }
+
+    // Pipe plants: they cannot be stomped, touching one kills you.
+    foreach (ref plant; piranhas) {
+        float h = piranhaHeight(plant);
+        if (h < 2.0f) continue;
+        auto pbox = Box(cast(int) (plant.cx - 6), cast(int) (plant.baseY - h), 12, cast(int) h);
+        if (p.hasIntersection(pbox)) {
+            killPlayer();
+            return;
         }
     }
 
@@ -578,6 +644,26 @@ void drawGoomba(Goomba g) {
     drawRect(bx + 10 - (step ? 0 : 1), by + 11, 6, 5, goombaFeet);
 }
 
+void drawPiranha(Piranha plant) {
+    float h = piranhaHeight(plant);
+    if (h < 1.0f) return;
+    float top = plant.baseY - h;
+    float headH = min(h, 10.0f);
+    if (h > 10.0f) drawRect(plant.cx - 2, top + 10, 4, h - 10, plantGreen); // stem
+    drawRect(plant.cx - 6, top, 12, headH, plantRed);                       // head
+    if (headH >= 10.0f) {
+        drawRect(plant.cx - 4, top + 1, 3, 3, hudWhite);                    // eyes
+        drawRect(plant.cx + 1, top + 1, 3, 3, hudWhite);
+        drawRect(plant.cx - 3, top + 2, 1, 1, marioHair);                   // pupils
+        drawRect(plant.cx + 2, top + 2, 1, 1, marioHair);
+        drawRect(plant.cx - 5, top + 6, 10, 2, hudWhite);                   // teeth
+        drawRect(plant.cx - 3, top + 6, 1, 2, plantRed);
+        drawRect(plant.cx - 1, top + 6, 1, 2, plantRed);
+        drawRect(plant.cx + 1, top + 6, 1, 2, plantRed);
+        drawRect(plant.cx + 3, top + 6, 1, 2, plantRed);
+    }
+}
+
 void drawCoin(float x, float y) {
     // Fake a spinning coin by squashing its width over time.
     float s = sin(elapsedTime * 8);
@@ -601,6 +687,8 @@ void drawEntities() {
         if (!g.alive) continue;
         drawGoomba(g);
     }
+    // Pipe plants.
+    foreach (ref plant; piranhas) drawPiranha(plant);
 }
 
 void drawHUD() {
@@ -640,6 +728,7 @@ bool update(float dt) {
         case State.playing:
             updatePlayer(dt);
             updateGoombas(dt);
+            updatePiranhas(dt);
             checkCollisions();
             timeLeft -= dt;
             if (timeLeft <= 0) killPlayer();
